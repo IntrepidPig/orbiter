@@ -30,8 +30,6 @@ use winit::{DeviceEvent, Event, EventsLoop, Window, WindowBuilder, WindowEvent};
 
 pub mod td;
 
-pub type ColorFormat = Rgba8Srgb;
-
 fn main() {
 	unsafe {
 		init();
@@ -110,6 +108,7 @@ where
 	device: B::Device,
 	queue_group: QueueGroup<B, Graphics>,
 	command_pool: CommandPool<B, Graphics>,
+	format: Format,
 	render_pass: B::RenderPass,
 	pipeline: B::GraphicsPipeline,
 	swapchain: B::Swapchain,
@@ -134,7 +133,18 @@ where
 		let mut surface = surface;
 		let (device, mut queue_group) = Self::get_device_and_queue_group(&adapter, &surface);
 		let command_pool = Self::create_command_pool(&device, &queue_group);
-		let render_pass = Self::build_render_pass(&device);
+		let (_caps, formats, _present_modes, _composite_alphas) =
+			surface.compatibility(&mut adapter.physical_device);
+		debug!("Supported formats: {:?}", formats);
+		let format = formats.map_or(Format::Rgba8Srgb, |formats| {
+			formats
+				.iter()
+				.find(|format| format.base_format().1 == ChannelType::Srgb)
+				.map(|format| *format)
+				.unwrap_or(formats[0])
+		});
+		debug!("Picked {:?}", format);
+		let render_pass = Self::build_render_pass(&device, format);
 		let vert_spirv: &[u8] = include_bytes!("../assets/vert.spv");
 		let frag_spirv: &[u8] = include_bytes!("../assets/frag.spv");
 		let shaders = Self::load_spirv_shaders(
@@ -146,7 +156,7 @@ where
 		);
 		let pipeline = Self::build_pipeline::<td::Vertex>(&device, &render_pass, &shaders);
 		let (swapchain, backbuffer) =
-			Self::build_swapchain(&device, &mut adapter, &mut surface, WIDTH, HEIGHT);
+			Self::build_swapchain(&device, &mut adapter, &mut surface, format, WIDTH, HEIGHT);
 		let (frame_views, framebuffers) =
 			Self::get_frame_views_and_buffers(&device, &render_pass, backbuffer, WIDTH, HEIGHT);
 		let (semaphore, fence) = Self::create_semaphore_and_fence(&device);
@@ -162,6 +172,7 @@ where
 			device,
 			queue_group,
 			command_pool,
+			format,
 			render_pass,
 			pipeline,
 			swapchain,
@@ -204,9 +215,9 @@ where
 		}
 	}
 
-	pub fn build_render_pass(device: &B::Device) -> B::RenderPass {
+	pub fn build_render_pass(device: &B::Device, format: Format) -> B::RenderPass {
 		let color_attachment = Attachment {
-			format: Some(Format::Rgba8Unorm),
+			format: Some(format),
 			samples: 1,
 			ops: AttachmentOps::new(AttachmentLoadOp::Clear, AttachmentStoreOp::Store),
 			stencil_ops: AttachmentOps::DONT_CARE,
@@ -333,19 +344,13 @@ where
 		device: &B::Device,
 		adapter: &mut Adapter<B>,
 		surface: &mut B::Surface,
+		format: Format,
 		width: u32,
 		height: u32,
 	) -> (B::Swapchain, Backbuffer<B>) {
 		let extent = Extent2D { width, height };
-		let (caps, formats, _present_modes, _composite_alphas) =
+		let (caps, _formats, _present_modes, _composite_alphas) =
 			surface.compatibility(&mut adapter.physical_device);
-		let format = formats.map_or(Format::Rgba8Srgb, |formats| {
-			formats
-				.iter()
-				.find(|format| format.base_format().1 == ChannelType::Srgb)
-				.map(|format| *format)
-				.unwrap_or(formats[0])
-		});
 		let swap_config = SwapchainConfig::from_caps(&caps, format, extent);
 
 		unsafe { device.create_swapchain(surface, swap_config, None).unwrap() }
@@ -358,6 +363,7 @@ where
 			&self.device,
 			&mut self.adapter,
 			&mut self.surface,
+			self.format,
 			width,
 			height,
 		);
@@ -404,7 +410,7 @@ where
 							.create_image_view(
 								image,
 								ViewKind::D2,
-								Format::Rgba8Unorm,
+								Format::Bgra8Srgb,
 								Swizzle::NO,
 								color_range.clone(),
 							)
@@ -564,7 +570,7 @@ where
 			debug!("Submitting");
 			self.queue_group.queues[0].submit(submission, Some(&mut self.fence));
 			debug!("Waiting");
-			self.device.wait_for_fence(&self.fence, 1).unwrap();
+			self.device.wait_for_fence(&self.fence, !0).unwrap();
 			debug!("Freeing cmd buf");
 			self.command_pool.free(Some(cmd_buffer));
 			debug!("Presenting");

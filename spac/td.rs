@@ -5,7 +5,7 @@ pub struct Vertex {
 	col: [f32; 4],
 }
 
-pub const TRI: [Vertex; 3] = [
+pub const TRI: [Vertex; 6] = [
 	Vertex {
 		pos: [0.0, -1.0, 0.0],
 		col: [1.0, 0.0, 0.0, 1.0],
@@ -17,5 +17,17 @@ pub const TRI: [Vertex; 3] = [
 	Vertex {
 		pos: [0.0, 1.0, 0.0],
 		col: [0.0, 1.0, 0.0, 1.0],
+	},
+	Vertex {
+		pos: [0.0, -1.0, 0.0],
+		col: [1.0, 0.0, 0.0, 1.0],
+	},
+	Vertex {
+		pos: [0.0, 1.0, 0.0],
+		col: [0.0, 1.0, 0.0, 1.0],
+	},
+	Vertex {
+		pos: [1.0, 0.0, 0.0],
+		col: [1.0, 1.0, 0.0, 1.0],
 	},
 ];
