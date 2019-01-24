@@ -1,0 +1,8 @@
+/target
+/cmake-build-debug
+CMakeLists.txt
+build_shaders.sh
+assets/*.spv
+.idea
+.vscode
+Cargo.lock
