@@ -19,20 +19,12 @@ path = "spas/main.rs"
 nalgebra = "0.16"
 alga = "0.7"
 winit = "0.18"
-lazy_static = "1.0"
 log = "0.4"
-failure = "0.1"
-rand = "0.6"
-palette = "0.4"
 env_logger = "0.5"
 hal = { version = "0.1.0", package = "gfx-hal" }
 gfx-backend-vulkan = "0.1.0"
 fern = "0.5"
 chrono = "0.4"
-
-[features]
-default-features = []
-vulkan = []
 
 [profile.release]
 lto = true
