@@ -1,52 +1,41 @@
-use std::{
-	io::{Read},
-	collections::{HashMap},
-};
+use std::{collections::HashMap, io::Read};
 
 use hal::{
-	Graphics, Backbuffer, DescriptorPool, FrameSync, Primitive, SwapchainConfig,
-	Device, Instance, PhysicalDevice, Surface, Swapchain, Backend,
-	format::{
-		self, AsFormat, ChannelType, Rgba8Srgb, Swizzle, Format, Aspects, Component,
-	},
+	adapter::Adapter,
+	buffer,
+	command::{self, ClearColor, ClearValue, CommandBuffer},
+	format::{self, AsFormat, Aspects, ChannelType, Component, Format, Rgba8Srgb, Swizzle},
+	image::{self, Extent, Layout, SubresourceRange, ViewKind},
+	memory,
 	pass::{
-		self, Subpass, Attachment, AttachmentOps, AttachmentStoreOp, AttachmentLoadOp, SubpassDesc, SubpassDependency,
+		self, Attachment, AttachmentLoadOp, AttachmentOps, AttachmentStoreOp, Subpass,
+		SubpassDependency, SubpassDesc,
 	},
+	pool::{self, CommandPool, CommandPoolCreateFlags},
 	pso::{
-		self, PipelineStage, ShaderStageFlags, EntryPoint, Specialization, SpecializationConstant, GraphicsShaderSet, ColorMask,
-		ColorBlendDesc, BlendState, Rasterizer, GraphicsPipelineDesc, Viewport, Rect,
+		self, BlendState, ColorBlendDesc, ColorMask, EntryPoint, GraphicsPipelineDesc,
+		GraphicsShaderSet, PipelineStage, Rasterizer, Rect, ShaderStageFlags, Specialization,
+		SpecializationConstant, Viewport,
 	},
-	queue::{
-		self, Submission,
-		family::{QueueGroup},
-	},
-	pool::{
-		self, CommandPoolCreateFlags, CommandPool,
-	},
-	buffer::{self},
-	command::{self, CommandBuffer, ClearValue, ClearColor},
-	image::{self, Layout, Extent, SubresourceRange, ViewKind},
-	memory::{self},
-	window::{
-		Extent2D,
-	},
-	adapter::{Adapter},
+	queue::{self, family::QueueGroup, Submission},
+	window::Extent2D,
+	Backbuffer, Backend, DescriptorPool, Device, FrameSync, Graphics, Instance, PhysicalDevice,
+	Primitive, Surface, Swapchain, SwapchainConfig,
 };
 
-use gfx_backend_vulkan::{
-	self as backend,
-};
+use gfx_backend_vulkan as backend;
 
-use winit::{Window, WindowBuilder, WindowEvent, DeviceEvent, Event, EventsLoop};
-use log::{info, warn, error, debug, trace};
+use log::{debug, error, info, trace, warn};
+use winit::{DeviceEvent, Event, EventsLoop, Window, WindowBuilder, WindowEvent};
 
 pub mod td;
-
 
 pub type ColorFormat = Rgba8Srgb;
 
 fn main() {
-	unsafe { init(); }
+	unsafe {
+		init();
+	}
 }
 
 fn setup_logging() {
@@ -80,9 +69,9 @@ pub unsafe fn init() {
 	debug!("Started, allocating memory");
 	let (vertex_buffer, vertex_memory) = renderer.create_vertex_buffer(&td::TRI);
 	debug!("Allocated memory, starting main loop");
-	
+
 	let mut running = true;
-	
+
 	while running {
 		debug!("loop, polling events");
 		events_loop.poll_events(|event| {
@@ -92,14 +81,15 @@ pub unsafe fn init() {
 					WindowEvent::Resized(new_size) => {
 						let new_size = new_size.to_physical(1.0);
 						renderer.recreate_swapchain = true;
-						renderer.recreate_swapchain_dims = Some((new_size.width as _, new_size.height as _));
-					},
+						renderer.recreate_swapchain_dims =
+							Some((new_size.width as _, new_size.height as _));
+					}
 					WindowEvent::CloseRequested => {
 						running = false;
-					},
-					_ => {},
+					}
+					_ => {}
 				},
-				_ => {},
+				_ => {}
 			}
 		});
 		debug!("rendering vertices");
@@ -108,7 +98,10 @@ pub unsafe fn init() {
 	}
 }
 
-pub struct Renderer<B, I> where B: hal::Backend, I: hal::Instance<Backend = B>
+pub struct Renderer<B, I>
+where
+	B: hal::Backend,
+	I: hal::Instance<Backend = B>,
 {
 	window: Window,
 	instance: I,
@@ -129,7 +122,10 @@ pub struct Renderer<B, I> where B: hal::Backend, I: hal::Instance<Backend = B>
 	recreate_swapchain_dims: Option<(u32, u32)>,
 }
 
-impl<B, I> Renderer<B, I> where B: Backend, I: Instance<Backend = B>
+impl<B, I> Renderer<B, I>
+where
+	B: Backend,
+	I: Instance<Backend = B>,
 {
 	pub fn new(instance: I, window: Window, surface: B::Surface) -> Self {
 		const WIDTH: u32 = 1024;
@@ -141,10 +137,18 @@ impl<B, I> Renderer<B, I> where B: Backend, I: Instance<Backend = B>
 		let render_pass = Self::build_render_pass(&device);
 		let vert_spirv: &[u8] = include_bytes!("../assets/vert.spv");
 		let frag_spirv: &[u8] = include_bytes!("../assets/frag.spv");
-		let shaders = Self::load_spirv_shaders(&device, vec![(String::from("vertex"), vert_spirv), (String::from("fragment"), frag_spirv)]);
+		let shaders = Self::load_spirv_shaders(
+			&device,
+			vec![
+				(String::from("vertex"), vert_spirv),
+				(String::from("fragment"), frag_spirv),
+			],
+		);
 		let pipeline = Self::build_pipeline::<td::Vertex>(&device, &render_pass, &shaders);
-		let (swapchain, backbuffer) = Self::build_swapchain(&device, &mut adapter, &mut surface, WIDTH, HEIGHT);
-		let (frame_views, framebuffers) = Self::get_frame_views_and_buffers(&device, &render_pass, backbuffer, WIDTH, HEIGHT);
+		let (swapchain, backbuffer) =
+			Self::build_swapchain(&device, &mut adapter, &mut surface, WIDTH, HEIGHT);
+		let (frame_views, framebuffers) =
+			Self::get_frame_views_and_buffers(&device, &render_pass, backbuffer, WIDTH, HEIGHT);
 		let (semaphore, fence) = Self::create_semaphore_and_fence(&device);
 		let viewport = Self::create_viewport(WIDTH, HEIGHT);
 		let recreate_swapchain = false;
@@ -180,17 +184,26 @@ impl<B, I> Renderer<B, I> where B: Backend, I: Instance<Backend = B>
 		adapter
 	}
 
-	pub fn get_device_and_queue_group(adapter: &Adapter<B>, surface: &dyn Surface<B>) -> (B::Device, QueueGroup<B, Graphics>) {
-		adapter.open_with::<_, Graphics>(1, |family| surface.supports_queue_family(family)).unwrap()
+	pub fn get_device_and_queue_group(
+		adapter: &Adapter<B>,
+		surface: &dyn Surface<B>,
+	) -> (B::Device, QueueGroup<B, Graphics>) {
+		adapter
+			.open_with::<_, Graphics>(1, |family| surface.supports_queue_family(family))
+			.unwrap()
 	}
 
-	pub fn create_command_pool(device: &B::Device, queue_group: &QueueGroup<B, Graphics>) -> CommandPool<B, Graphics> {
-		unsafe { device.create_command_pool_typed(
-			queue_group,
-			CommandPoolCreateFlags::empty(),
-		).unwrap() }
+	pub fn create_command_pool(
+		device: &B::Device,
+		queue_group: &QueueGroup<B, Graphics>,
+	) -> CommandPool<B, Graphics> {
+		unsafe {
+			device
+				.create_command_pool_typed(queue_group, CommandPoolCreateFlags::empty())
+				.unwrap()
+		}
 	}
-	
+
 	pub fn build_render_pass(device: &B::Device) -> B::RenderPass {
 		let color_attachment = Attachment {
 			format: Some(Format::Rgba8Unorm),
@@ -199,36 +212,54 @@ impl<B, I> Renderer<B, I> where B: Backend, I: Instance<Backend = B>
 			stencil_ops: AttachmentOps::DONT_CARE,
 			layouts: Layout::Undefined..Layout::Present,
 		};
-		
+
 		let subpass = SubpassDesc {
 			colors: &[(0, Layout::ColorAttachmentOptimal)],
 			depth_stencil: None,
 			inputs: &[],
 			resolves: &[],
-			preserves: &[]
+			preserves: &[],
 		};
-		
+
 		let dependency = SubpassDependency {
 			passes: pass::SubpassRef::External..pass::SubpassRef::Pass(0),
 			stages: PipelineStage::COLOR_ATTACHMENT_OUTPUT..PipelineStage::COLOR_ATTACHMENT_OUTPUT,
 			accesses: image::Access::empty()
 				..(image::Access::COLOR_ATTACHMENT_READ | image::Access::COLOR_ATTACHMENT_WRITE),
 		};
-		
-		unsafe { device.create_render_pass(&[color_attachment], &[subpass], &[dependency]).unwrap() }
+
+		unsafe {
+			device
+				.create_render_pass(&[color_attachment], &[subpass], &[dependency])
+				.unwrap()
+		}
 	}
-	
-	pub fn load_spirv_shaders<In, R>(device: &B::Device, inputs: In) -> HashMap<String, B::ShaderModule> where In: IntoIterator<Item=(String, R)>, R: Read {
-		inputs.into_iter().map(|(name, mut input)| {
-			let mut buf = Vec::new();
-			input.read_to_end(&mut buf).unwrap();
-			(name, unsafe { device.create_shader_module(&buf).unwrap() })
-		}).collect()
+
+	pub fn load_spirv_shaders<In, R>(
+		device: &B::Device,
+		inputs: In,
+	) -> HashMap<String, B::ShaderModule>
+	where
+		In: IntoIterator<Item = (String, R)>,
+		R: Read,
+	{
+		inputs
+			.into_iter()
+			.map(|(name, mut input)| {
+				let mut buf = Vec::new();
+				input.read_to_end(&mut buf).unwrap();
+				(name, unsafe { device.create_shader_module(&buf).unwrap() })
+			})
+			.collect()
 	}
-	
-	pub fn build_pipeline<V>(device: &B::Device, render_pass: &B::RenderPass, shader_modules: &HashMap<String, B::ShaderModule>) -> B::GraphicsPipeline {
+
+	pub fn build_pipeline<V>(
+		device: &B::Device,
+		render_pass: &B::RenderPass,
+		shader_modules: &HashMap<String, B::ShaderModule>,
+	) -> B::GraphicsPipeline {
 		let pipeline_layout = unsafe { device.create_pipeline_layout(&[], &[]).unwrap() };
-		
+
 		let vs_entry = EntryPoint::<B> {
 			entry: "main",
 			module: shader_modules.get("vertex").unwrap(),
@@ -237,13 +268,13 @@ impl<B, I> Renderer<B, I> where B: Backend, I: Instance<Backend = B>
 				data: unsafe { std::mem::transmute::<&f32, &[u8; 4]>(&0.8f32) },
 			},
 		};
-		
+
 		let fs_entry = EntryPoint::<B> {
 			entry: "main",
 			module: shader_modules.get("fragment").unwrap(),
 			specialization: Specialization::default(),
 		};
-		
+
 		let shader_entries = GraphicsShaderSet {
 			vertex: vs_entry,
 			hull: None,
@@ -251,9 +282,12 @@ impl<B, I> Renderer<B, I> where B: Backend, I: Instance<Backend = B>
 			geometry: None,
 			fragment: Some(fs_entry),
 		};
-		
-		let subpass = Subpass { index: 0, main_pass: render_pass };
-		
+
+		let subpass = Subpass {
+			index: 0,
+			main_pass: render_pass,
+		};
+
 		let mut pipeline_desc = GraphicsPipelineDesc::new(
 			shader_entries,
 			Primitive::TriangleList,
@@ -261,8 +295,11 @@ impl<B, I> Renderer<B, I> where B: Backend, I: Instance<Backend = B>
 			&pipeline_layout,
 			subpass,
 		);
-		
-		pipeline_desc.blender.targets.push(ColorBlendDesc(ColorMask::ALL, BlendState::ALPHA));
+
+		pipeline_desc
+			.blender
+			.targets
+			.push(ColorBlendDesc(ColorMask::ALL, BlendState::ALPHA));
 		pipeline_desc.vertex_buffers.push(pso::VertexBufferDesc {
 			binding: 0,
 			stride: std::mem::size_of::<V>() as u32,
@@ -284,13 +321,24 @@ impl<B, I> Renderer<B, I> where B: Backend, I: Instance<Backend = B>
 				offset: 12,
 			},
 		});
-		
-		unsafe { device.create_graphics_pipeline(&pipeline_desc, None).unwrap() }
+
+		unsafe {
+			device
+				.create_graphics_pipeline(&pipeline_desc, None)
+				.unwrap()
+		}
 	}
-	
-	pub fn build_swapchain(device: &B::Device, adapter: &mut Adapter<B>, surface: &mut B::Surface, width: u32, height: u32) -> (B::Swapchain, Backbuffer<B>) {
+
+	pub fn build_swapchain(
+		device: &B::Device,
+		adapter: &mut Adapter<B>,
+		surface: &mut B::Surface,
+		width: u32,
+		height: u32,
+	) -> (B::Swapchain, Backbuffer<B>) {
 		let extent = Extent2D { width, height };
-		let (caps, formats, _present_modes, _composite_alphas) = surface.compatibility(&mut adapter.physical_device);
+		let (caps, formats, _present_modes, _composite_alphas) =
+			surface.compatibility(&mut adapter.physical_device);
 		let format = formats.map_or(Format::Rgba8Srgb, |formats| {
 			formats
 				.iter()
@@ -299,15 +347,27 @@ impl<B, I> Renderer<B, I> where B: Backend, I: Instance<Backend = B>
 				.unwrap_or(formats[0])
 		});
 		let swap_config = SwapchainConfig::from_caps(&caps, format, extent);
-		
+
 		unsafe { device.create_swapchain(surface, swap_config, None).unwrap() }
 	}
-	
+
 	pub fn recreate_swapchain(&mut self, width: u32, height: u32) {
 		debug!("Recreated swapchain");
 		self.device.wait_idle().unwrap();
-		let (swapchain, backbuffer) = Self::build_swapchain(&self.device, &mut self.adapter, &mut self.surface, width, height);
-		let (frame_views, framebuffers) = Self::get_frame_views_and_buffers(&self.device, &self.render_pass, backbuffer, width, height);
+		let (swapchain, backbuffer) = Self::build_swapchain(
+			&self.device,
+			&mut self.adapter,
+			&mut self.surface,
+			width,
+			height,
+		);
+		let (frame_views, framebuffers) = Self::get_frame_views_and_buffers(
+			&self.device,
+			&self.render_pass,
+			backbuffer,
+			width,
+			height,
+		);
 		self.swapchain = swapchain;
 		self.frame_views = frame_views;
 		self.framebuffers = framebuffers;
@@ -315,79 +375,122 @@ impl<B, I> Renderer<B, I> where B: Backend, I: Instance<Backend = B>
 		self.viewport.rect.h = height as _;
 		self.recreate_swapchain = false;
 	}
-	
-	pub fn get_frame_views_and_buffers(device: &B::Device, render_pass: &B::RenderPass, backbuffer: Backbuffer<B>, width: u32, height: u32) -> (Vec<B::ImageView>, Vec<B::Framebuffer>) {
+
+	pub fn get_frame_views_and_buffers(
+		device: &B::Device,
+		render_pass: &B::RenderPass,
+		backbuffer: Backbuffer<B>,
+		width: u32,
+		height: u32,
+	) -> (Vec<B::ImageView>, Vec<B::Framebuffer>) {
 		match backbuffer {
 			Backbuffer::Images(images) => {
-				let extent = Extent { width, height, depth: 1 };
-				
-				let color_range = SubresourceRange {
-					aspects: Aspects::COLOR, levels: 0..1, layers: 0..1,
+				let extent = Extent {
+					width,
+					height,
+					depth: 1,
 				};
-				
-				let image_views = images.iter()
-					.map(|image| {
-						unsafe { device.create_image_view(
-							image,
-							ViewKind::D2,
-							Format::Rgba8Unorm,
-							Swizzle::NO,
-							color_range.clone(),
-						).unwrap() }
+
+				let color_range = SubresourceRange {
+					aspects: Aspects::COLOR,
+					levels: 0..1,
+					layers: 0..1,
+				};
+
+				let image_views = images
+					.iter()
+					.map(|image| unsafe {
+						device
+							.create_image_view(
+								image,
+								ViewKind::D2,
+								Format::Rgba8Unorm,
+								Swizzle::NO,
+								color_range.clone(),
+							)
+							.unwrap()
 					})
 					.collect::<Vec<_>>();
-				
-				let fbos = image_views.iter()
-					.map(|image_view| {
-						unsafe { device.create_framebuffer(render_pass, vec![image_view], extent).unwrap() }
-					}).collect();
-				
+
+				let fbos = image_views
+					.iter()
+					.map(|image_view| unsafe {
+						device
+							.create_framebuffer(render_pass, vec![image_view], extent)
+							.unwrap()
+					})
+					.collect();
+
 				(image_views, fbos)
-			},
+			}
 			Backbuffer::Framebuffer(fbo) => (Vec::new(), vec![fbo]),
 		}
 	}
-	
+
 	pub fn create_semaphore_and_fence(device: &B::Device) -> (B::Semaphore, B::Fence) {
-		(device.create_semaphore().unwrap(), device.create_fence(false).unwrap())
+		(
+			device.create_semaphore().unwrap(),
+			device.create_fence(false).unwrap(),
+		)
 	}
-	
+
 	pub fn create_vertex_buffer<V: Copy>(&self, data: &[V]) -> (B::Buffer, B::Memory) {
 		let buffer_stride = std::mem::size_of::<V>() as u64;
 		let buffer_len = data.len() as u64 * buffer_stride;
-		
-		let mut vertex_buffer = unsafe { self.device.create_buffer(buffer_len, buffer::Usage::VERTEX).unwrap() };
-		
+
+		let mut vertex_buffer = unsafe {
+			self.device
+				.create_buffer(buffer_len, buffer::Usage::VERTEX)
+				.unwrap()
+		};
+
 		let buffer_req = unsafe { self.device.get_buffer_requirements(&vertex_buffer) };
-		
-		let memory_types = self.adapter.physical_device.memory_properties().memory_types;
+
+		let memory_types = self
+			.adapter
+			.physical_device
+			.memory_properties()
+			.memory_types;
 		let upload_type = memory_types
 			.iter()
 			.enumerate()
 			.position(|(id, memory_type)| {
 				buffer_req.type_mask & (1 << id) != 0
-					&& memory_type.properties.contains(memory::Properties::CPU_VISIBLE)
+					&& memory_type
+						.properties
+						.contains(memory::Properties::CPU_VISIBLE)
 			})
 			.unwrap()
 			.into();
-		
-		let buffer_memory = unsafe { self.device.allocate_memory(upload_type, buffer_req.size).unwrap() };
-		unsafe { self.device.bind_buffer_memory(&buffer_memory, 0, &mut vertex_buffer).unwrap() };
-		
+
+		let buffer_memory = unsafe {
+			self.device
+				.allocate_memory(upload_type, buffer_req.size)
+				.unwrap()
+		};
 		unsafe {
-			let mut vertices = self.device.acquire_mapping_writer::<V>(&buffer_memory, 0..buffer_req.size).unwrap();
+			self.device
+				.bind_buffer_memory(&buffer_memory, 0, &mut vertex_buffer)
+				.unwrap()
+		};
+
+		unsafe {
+			let mut vertices = self
+				.device
+				.acquire_mapping_writer::<V>(&buffer_memory, 0..buffer_req.size)
+				.unwrap();
 			vertices[0..data.len()].copy_from_slice(data);
 			self.device.release_mapping_writer(vertices).unwrap();
 		}
-		
+
 		(vertex_buffer, buffer_memory)
 	}
-	
+
 	pub fn get_dims(&self) -> (u32, u32) {
 		let size = self.window.get_inner_size().unwrap().to_physical(1.0);
 		(size.width as _, size.height as _)
 	}
-	
+
 	pub fn create_viewport(width: u32, height: u32) -> Viewport {
 		Viewport {
 			rect: Rect {
@@ -399,20 +502,24 @@ impl<B, I> Renderer<B, I> where B: Backend, I: Instance<Backend = B>
 			depth: 0.0..1.0,
 		}
 	}
-	
+
 	pub fn create_cmd_buffer(&mut self) -> CommandBuffer<B, Graphics, command::OneShot> {
-		self.command_pool.acquire_command_buffer::<command::OneShot>()
+		self.command_pool
+			.acquire_command_buffer::<command::OneShot>()
 	}
-	
+
 	pub fn render_vertices(&mut self, vertex_buffer: B::Buffer) {
 		if let Some(dims) = self.recreate_swapchain_dims.take() {
 			self.recreate_swapchain(dims.0, dims.1);
 		}
-		
+
 		let frame_index: hal::SwapImageIndex = unsafe {
 			self.device.reset_fence(&self.fence).unwrap();
 			self.command_pool.reset();
-			match self.swapchain.acquire_image(!0, FrameSync::Semaphore(&mut self.semaphore)) {
+			match self
+				.swapchain
+				.acquire_image(!0, FrameSync::Semaphore(&mut self.semaphore))
+			{
 				Ok(i) => i,
 				Err(_) => {
 					let dims = self.get_dims();
@@ -423,7 +530,7 @@ impl<B, I> Renderer<B, I> where B: Backend, I: Instance<Backend = B>
 			}
 		};
 		debug!("Got frame index");
-		
+
 		let mut cmd_buffer = self.create_cmd_buffer();
 		debug!("Created cmd buf");
 		unsafe {
@@ -432,27 +539,27 @@ impl<B, I> Renderer<B, I> where B: Backend, I: Instance<Backend = B>
 			cmd_buffer.set_scissors(0, &[self.viewport.rect]);
 			cmd_buffer.bind_graphics_pipeline(&self.pipeline);
 			cmd_buffer.bind_vertex_buffers(0, Some((&vertex_buffer, 0)));
-			
+
 			{
 				let mut encoder = cmd_buffer.begin_render_pass_inline(
 					&self.render_pass,
 					&self.framebuffers[frame_index as usize],
 					self.viewport.rect,
-					&[ClearValue::Color(ClearColor::Float([1.0, 1.0, 1.0, 1.0]))]
+					&[ClearValue::Color(ClearColor::Float([1.0, 1.0, 1.0, 1.0]))],
 				);
 				encoder.draw(0..6, 0..1);
 			}
-			
+
 			cmd_buffer.finish();
 		}
 		debug!("Finished cmd buf, creating submission");
-		
+
 		let submission = Submission {
 			command_buffers: Some(&cmd_buffer),
 			wait_semaphores: Some((&self.semaphore, PipelineStage::BOTTOM_OF_PIPE)),
 			signal_semaphores: &[],
 		};
-		
+
 		unsafe {
 			debug!("Submitting");
 			self.queue_group.queues[0].submit(submission, Some(&mut self.fence));
@@ -461,13 +568,14 @@ impl<B, I> Renderer<B, I> where B: Backend, I: Instance<Backend = B>
 			debug!("Freeing cmd buf");
 			self.command_pool.free(Some(cmd_buffer));
 			debug!("Presenting");
-			if let Err(_) = self.swapchain.present_nosemaphores(&mut self.queue_group.queues[0], frame_index) {
+			if let Err(_) = self
+				.swapchain
+				.present_nosemaphores(&mut self.queue_group.queues[0], frame_index)
+			{
 				let dims = self.get_dims();
 				self.recreate_swapchain(dims.0, dims.1);
 			};
 			debug!("Done");
 		}
-		
-		
 	}
 }
