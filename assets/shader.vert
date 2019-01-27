@@ -18,6 +18,6 @@ layout(location = 1) out vec4 frag_color;
 
 void main() {
     frag_color = color;
-    gl_Position = ubo.model * ubo.view * ubo.proj * vec4(pos, 1.0);
+    gl_Position = ubo.proj * ubo.view * ubo.model * vec4(pos, 1.0);
     //gl_Position = vec4(pos, 1.0);
 }

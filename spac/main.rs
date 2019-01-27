@@ -1,4 +1,4 @@
-use std::{collections::HashMap, io::Read};
+use std::{collections::HashMap, io::Read, path::Path, fs::File};
 
 use hal::{
 	adapter::Adapter,
@@ -26,10 +26,14 @@ use hal::{
 use gfx_backend_vulkan as backend;
 
 use log::{debug, error, info, trace, warn};
-use winit::{DeviceEvent, Event, EventsLoop, Window, WindowBuilder, WindowEvent};
+use winit::{DeviceEvent, Event, EventsLoop, Window, WindowBuilder, WindowEvent, VirtualKeyCode, ElementState};
+
+use spa::prelude::*;
 
 pub mod td;
 
+// TODO: figure out how vulkan-tutorial.com "swapchain images" fit into here to be able to send a uniform
+// buffer to the place.
 fn main() {
 	unsafe {
 		init();
@@ -65,13 +69,31 @@ pub unsafe fn init() {
 	let surface = instance.create_surface(&window);
 	let mut renderer = Renderer::new(instance, window, surface);
 	debug!("Started, allocating memory");
-	let (vertex_buffer, vertex_memory) = renderer.create_vertex_buffer(&td::TRI);
+	let teapot = load_teapot();
+	let (vertex_buffer, vertex_memory) = renderer.create_vertex_buffer(&teapot);
 	debug!("Allocated memory, starting main loop");
+	
+	struct Controls {
+		w: bool,
+		a: bool,
+		s: bool,
+		d: bool,
+	}
+	
+	let mut controls = Controls {
+		w: false,
+		a: false,
+		s: false,
+		d: false
+	};
+	
+	let mut pos = Point3::from([0.0, 0.0, -1.0]);
 
 	let mut running = true;
 
 	while running {
-		debug!("loop, polling events");
+		let start_time = std::time::Instant::now();
+		trace!("loop, polling events");
 		events_loop.poll_events(|event| {
 			trace!("event: {:?}", event);
 			match event {
@@ -84,16 +106,108 @@ pub unsafe fn init() {
 					}
 					WindowEvent::CloseRequested => {
 						running = false;
-					}
+					},
+					_ => {},
+				},
+				Event::DeviceEvent { event, .. } => match event {
+					winit::DeviceEvent::Key(input) => {
+						let winit::KeyboardInput { state, virtual_keycode, modifiers, scancode: _scancode } = input;
+						match (virtual_keycode, state) {
+							(Some(VirtualKeyCode::W), ElementState::Pressed) => {
+								controls.w = true;
+							},
+							(Some(VirtualKeyCode::A), ElementState::Pressed) => {
+								controls.a = true;
+							},
+							(Some(VirtualKeyCode::S), ElementState::Pressed) => {
+								controls.s = true;
+							},
+							(Some(VirtualKeyCode::D), ElementState::Pressed) => {
+								controls.d = true;
+							},
+							(Some(VirtualKeyCode::W), ElementState::Released) => {
+								controls.w = false;
+							},
+							(Some(VirtualKeyCode::A), ElementState::Released) => {
+								controls.a = false;
+							},
+							(Some(VirtualKeyCode::S), ElementState::Released) => {
+								controls.s = false;
+							},
+							(Some(VirtualKeyCode::D), ElementState::Released) => {
+								controls.d = false;
+							},
+							_ => {},
+						}
+					},
 					_ => {}
 				},
 				_ => {}
 			}
 		});
-		debug!("rendering vertices");
-		renderer.render_vertices(vertex_buffer);
+		
+		if controls.w {
+			pos.z += 0.1;
+		} else if controls.a {
+			pos.x += 0.1;
+		} else if controls.s {
+			pos.z -= 0.1;
+		} else if controls.d {
+			pos.x -= 0.1;
+		}
+		
+		trace!("rendering vertices");
+		let aspect = renderer.get_dims().0 as f32 / renderer.get_dims().1 as f32;
+		let mvp = td::ModelViewProjection {
+			model: Mat4::new_rotation(Vec3::zeros()),
+			view: Mat4::look_at_rh(&pos, &Point3::from([0.0, 0.0, 0.0]), &Vec3::from([0.0, 1.0, 0.0])),
+			proj: Mat4::new_perspective(aspect, 90.0, 0.0, 1000.0),
+		};
+		renderer.render_vertices(vertex_buffer, mvp);
 		std::thread::sleep(std::time::Duration::from_millis(16));
+		let dur = start_time.elapsed();
 	}
+}
+
+fn load_teapot() -> Vec<td::Vertex> {
+	use palette::{Hsv, RgbHue, rgb::Rgb};
+	
+	let mut data = Vec::new();
+	let mut buf = String::new();
+	let mut file = File::open(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/test.dat")).unwrap();
+	file.read_to_string(&mut buf).unwrap();
+	
+	for float_str in buf.split(',') {
+		let float_str = float_str.trim();
+		if float_str.is_empty() {
+			continue;
+		}
+		
+		data.push(float_str.parse::<f32>().unwrap_or_else(|_| {
+			error!("Couldn't parse '{}' as float", float_str);
+			0.0
+		}));
+	}
+	
+	let mut verts = Vec::with_capacity(data.len() / 3);
+	for i in 0..(data.len() / 3) {
+		let i = i * 3;
+		verts.push(td::Vertex { pos: Point3::from([data[i], data[i+1], data[i+2]]), col: Vec4::from([0.0, 0.0, 0.0, 1.0]) });
+	}
+	
+	let dh = 360.0 / verts.len() as f32;
+	let mut deg = 0.0;
+	
+	for vert in &mut verts {
+		let rgb: Rgb = Hsv::new(RgbHue::from_degrees(deg), 1.0, 1.0).into();
+		vert.col[0] = rgb.red;
+		vert.col[1] = rgb.green;
+		vert.col[2] = rgb.blue;
+		
+		deg += dh;
+	}
+	
+	verts
 }
 
 pub struct Renderer<B, I>
@@ -111,11 +225,18 @@ where
 	format: Format,
 	render_pass: B::RenderPass,
 	pipeline: B::GraphicsPipeline,
+	pipeline_layout: B::PipelineLayout,
+	mvp_buffer: B::Buffer,
+	mvp_memory: B::Memory,
 	swapchain: B::Swapchain,
+	swapchain_images: Vec<B::Image>,
+	dims: (u32, u32),
+	descriptor_pool: B::DescriptorPool,
+	descriptor_sets: Vec<B::DescriptorSet>,
 	frame_views: Vec<B::ImageView>,
 	framebuffers: Vec<B::Framebuffer>,
-	semaphore: B::Semaphore,
-	fence: B::Fence,
+	frame_semaphore: B::Semaphore,
+	present_semaphore: B::Semaphore,
 	viewport: Viewport,
 	recreate_swapchain: bool,
 	recreate_swapchain_dims: Option<(u32, u32)>,
@@ -145,25 +266,32 @@ where
 		});
 		debug!("Picked {:?}", format);
 		let render_pass = Self::build_render_pass(&device, format);
-		let vert_spirv: &[u8] = include_bytes!("../assets/vert.spv");
-		let frag_spirv: &[u8] = include_bytes!("../assets/frag.spv");
+		let compiler = shaderc::Compiler::new().unwrap();
+		let vert_spirv = Self::compile_shader_file(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/shader.vert"), shaderc::ShaderKind::Vertex);
+		let frag_spirv = Self::compile_shader_file(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/shader.frag"), shaderc::ShaderKind::Fragment);
 		let shaders = Self::load_spirv_shaders(
 			&device,
 			vec![
-				(String::from("vertex"), vert_spirv),
-				(String::from("fragment"), frag_spirv),
+				/*(String::from("vertex"), include_bytes!("../assets/vert.spv") as &[u8]),
+				(String::from("fragment"), include_bytes!("../assets/frag.spv") as &[u8]),
+				*/(String::from("vertex"), vert_spirv.as_binary_u8()),
+				(String::from("fragment"), frag_spirv.as_binary_u8()),
 			],
 		);
-		let pipeline = Self::build_pipeline::<td::Vertex>(&device, &render_pass, &shaders);
 		let (swapchain, backbuffer) =
 			Self::build_swapchain(&device, &mut adapter, &mut surface, format, WIDTH, HEIGHT);
-		let (frame_views, framebuffers) =
+		let (mvp_buffer, mvp_memory) = Self::create_uniform_buffer::<td::ModelViewProjection>(&device, &adapter);
+		let (swapchain_images, frame_views, framebuffers) =
 			Self::get_frame_views_and_buffers(&device, &render_pass, backbuffer, WIDTH, HEIGHT);
-		let (semaphore, fence) = Self::create_semaphore_and_fence(&device);
+		let mut descriptor_pool = Self::create_descriptor_pool(&device, &swapchain_images);
+		let (pipeline, pipeline_layout, descriptor_sets) = Self::build_pipeline::<td::Vertex>(&device, &render_pass, &shaders, &mut descriptor_pool, &mvp_buffer);
+		let (frame_semaphore, present_semaphore) = Self::create_semaphore_and_fence(&device);
 		let viewport = Self::create_viewport(WIDTH, HEIGHT);
 		let recreate_swapchain = false;
 		let recreate_swapchain_dims = None;
-
+		let dims = window.get_inner_size().unwrap().to_physical(1.0);
+		let dims = (dims.width as _, dims.height as _);
+		
 		Self {
 			window,
 			instance,
@@ -175,14 +303,21 @@ where
 			format,
 			render_pass,
 			pipeline,
+			pipeline_layout,
 			swapchain,
+			swapchain_images,
+			descriptor_sets,
+			mvp_buffer,
+			mvp_memory,
+			descriptor_pool,
 			frame_views,
 			framebuffers,
-			semaphore,
-			fence,
+			frame_semaphore,
+			present_semaphore,
 			viewport,
 			recreate_swapchain,
 			recreate_swapchain_dims,
+			dims,
 		}
 	}
 
@@ -245,6 +380,15 @@ where
 				.unwrap()
 		}
 	}
+	
+	pub fn compile_shader_file<P: AsRef<Path>>(path: P, kind: shaderc::ShaderKind) -> shaderc::CompilationArtifact {
+		let mut compiler = shaderc::Compiler::new().unwrap();
+		let mut file = File::open(path.as_ref()).unwrap();
+		let mut source_buf = String::new();
+		file.read_to_string(&mut source_buf).unwrap();
+		let name = path.as_ref().file_name().unwrap().to_string_lossy().to_owned();
+		compiler.compile_into_spirv(&source_buf, kind, &name, "main", None).unwrap()
+	}
 
 	pub fn load_spirv_shaders<In, R>(
 		device: &B::Device,
@@ -263,21 +407,72 @@ where
 			})
 			.collect()
 	}
+	
+	pub fn create_descriptor_pool(device: &B::Device, swapchain_images: &[B::Image]) -> B::DescriptorPool {
+		let descriptor_pool = unsafe { device.create_descriptor_pool(1, &[pso::DescriptorRangeDesc {
+			ty: pso::DescriptorType::UniformBuffer,
+			count: swapchain_images.len(),
+		}]).unwrap() };
+		descriptor_pool
+	}
+	
+	pub fn create_descriptor_sets(device: &B::Device) {
+	
+	}
 
 	pub fn build_pipeline<V>(
 		device: &B::Device,
 		render_pass: &B::RenderPass,
 		shader_modules: &HashMap<String, B::ShaderModule>,
-	) -> B::GraphicsPipeline {
-		let pipeline_layout = unsafe { device.create_pipeline_layout(&[], &[]).unwrap() };
+		descriptor_pool: &mut B::DescriptorPool,
+		mvp_buffer: &B::Buffer,
+	) -> (B::GraphicsPipeline, B::PipelineLayout, Vec<B::DescriptorSet>) {
+		let desc_set_layout_binding = pso::DescriptorSetLayoutBinding {
+			binding: 0,
+			ty: pso::DescriptorType::UniformBuffer,
+			count: 1,
+			stage_flags: pso::ShaderStageFlags::VERTEX,
+			immutable_samplers: false
+		};
+		
+		let desc_set_layout = unsafe { device.create_descriptor_set_layout(&[desc_set_layout_binding], &[]).unwrap() };
+		
+		let mut desc_sets = Vec::new();
+		unsafe { descriptor_pool.allocate_sets(&[desc_set_layout], &mut desc_sets) };
+		
+		unsafe {
+			device.write_descriptor_sets(vec![pso::DescriptorSetWrite {
+				set: &desc_sets[0],
+				binding: 0,
+				array_offset: 0,
+				descriptors: &[pso::Descriptor::Buffer(mvp_buffer, None..None)]
+			}]);
+		}
+		
+		let desc_set_layout_binding = pso::DescriptorSetLayoutBinding {
+			binding: 0,
+			ty: pso::DescriptorType::UniformBuffer,
+			count: 1,
+			stage_flags: pso::ShaderStageFlags::VERTEX,
+			immutable_samplers: false
+		};
+		
+		let desc_set_layout_binding = pso::DescriptorSetLayoutBinding {
+			binding: 0,
+			ty: pso::DescriptorType::UniformBuffer,
+			count: 1,
+			stage_flags: pso::ShaderStageFlags::VERTEX,
+			immutable_samplers: false
+		};
+		
+		let desc_set_layout = unsafe { device.create_descriptor_set_layout(&[desc_set_layout_binding], &[]).unwrap() };
+		
+		let pipeline_layout = unsafe { device.create_pipeline_layout(&[desc_set_layout], &[]).unwrap() };
 
 		let vs_entry = EntryPoint::<B> {
 			entry: "main",
 			module: shader_modules.get("vertex").unwrap(),
-			specialization: Specialization {
-				constants: &[SpecializationConstant { id: 0, range: 0..4 }],
-				data: unsafe { std::mem::transmute::<&f32, &[u8; 4]>(&0.8f32) },
-			},
+			specialization: Specialization::default(),
 		};
 
 		let fs_entry = EntryPoint::<B> {
@@ -329,15 +524,17 @@ where
 			binding: 0,
 			element: pso::Element {
 				format: Format::Rgba32Float,
-				offset: 12,
+				offset: (std::mem::size_of::<f32>() * 3) as u32,
 			},
 		});
 
-		unsafe {
+		let pipeline = unsafe {
 			device
 				.create_graphics_pipeline(&pipeline_desc, None)
 				.unwrap()
-		}
+		};
+		
+		(pipeline, pipeline_layout, desc_sets)
 	}
 
 	pub fn build_swapchain(
@@ -367,7 +564,7 @@ where
 			width,
 			height,
 		);
-		let (frame_views, framebuffers) = Self::get_frame_views_and_buffers(
+		let (swapchain_images, frame_views, framebuffers) = Self::get_frame_views_and_buffers(
 			&self.device,
 			&self.render_pass,
 			backbuffer,
@@ -375,11 +572,13 @@ where
 			height,
 		);
 		self.swapchain = swapchain;
+		self.swapchain_images = swapchain_images;
 		self.frame_views = frame_views;
 		self.framebuffers = framebuffers;
 		self.viewport.rect.w = width as _;
 		self.viewport.rect.h = height as _;
 		self.recreate_swapchain = false;
+		self.update_dims();
 	}
 
 	pub fn get_frame_views_and_buffers(
@@ -388,7 +587,7 @@ where
 		backbuffer: Backbuffer<B>,
 		width: u32,
 		height: u32,
-	) -> (Vec<B::ImageView>, Vec<B::Framebuffer>) {
+	) -> (Vec<B::Image>, Vec<B::ImageView>, Vec<B::Framebuffer>) {
 		match backbuffer {
 			Backbuffer::Images(images) => {
 				let extent = Extent {
@@ -427,16 +626,16 @@ where
 					})
 					.collect();
 
-				(image_views, fbos)
+				(images, image_views, fbos)
 			}
-			Backbuffer::Framebuffer(fbo) => (Vec::new(), vec![fbo]),
+			Backbuffer::Framebuffer(fbo) => (Vec::new(), Vec::new(), vec![fbo]),
 		}
 	}
 
-	pub fn create_semaphore_and_fence(device: &B::Device) -> (B::Semaphore, B::Fence) {
+	pub fn create_semaphore_and_fence(device: &B::Device) -> (B::Semaphore, B::Semaphore) {
 		(
 			device.create_semaphore().unwrap(),
-			device.create_fence(false).unwrap(),
+			device.create_semaphore().unwrap(),
 		)
 	}
 
@@ -491,10 +690,55 @@ where
 
 		(vertex_buffer, buffer_memory)
 	}
+	
+	pub fn create_uniform_buffer<U: Copy>(device: &B::Device, adapter: &Adapter<B>) -> (B::Buffer, B::Memory) {
+		let buffer_len = std::mem::size_of::<U>() as u64;
+		
+		let mut uniform_buffer = unsafe {
+			device
+				.create_buffer(buffer_len, buffer::Usage::UNIFORM)
+				.unwrap()
+		};
+		
+		let buffer_req = unsafe { device.get_buffer_requirements(&uniform_buffer) };
+		
+		let mut mem_properties = memory::Properties::empty();
+		mem_properties.insert(memory::Properties::CPU_VISIBLE);
+		mem_properties.insert(memory::Properties::COHERENT);
+		
+		let memory_types = adapter
+			.physical_device
+			.memory_properties()
+			.memory_types;
+		let upload_type = memory_types
+			.iter()
+			.enumerate()
+			.position(|(id, memory_type)| {
+				buffer_req.type_mask & (1 << id) != 0
+					&& memory_type
+					.properties
+					.contains(mem_properties)
+			})
+			.unwrap()
+			.into();
+		
+		let buffer_memory = unsafe { device.allocate_memory(upload_type, buffer_req.size).unwrap() };
+		
+		unsafe {
+			device.bind_buffer_memory(&buffer_memory, 0, &mut uniform_buffer)
+				.unwrap();
+		}
+		
+		(uniform_buffer, buffer_memory)
+	}
 
-	pub fn get_dims(&self) -> (u32, u32) {
+	pub fn update_dims(&mut self) {
 		let size = self.window.get_inner_size().unwrap().to_physical(1.0);
-		(size.width as _, size.height as _)
+		self.dims = (size.width as _, size.height as _)
+	}
+	
+	pub fn get_dims(&self) -> (u32, u32) {
+		self.dims
 	}
 
 	pub fn create_viewport(width: u32, height: u32) -> Viewport {
@@ -513,38 +757,51 @@ where
 		self.command_pool
 			.acquire_command_buffer::<command::OneShot>()
 	}
+	
+	pub fn update_mvp(&self, data: td::ModelViewProjection) {
+		unsafe {
+			let buffer_req = self.device.get_buffer_requirements(&self.mvp_buffer);
+			let mut writer = self.device.acquire_mapping_writer::<td::ModelViewProjection>(&self.mvp_memory, 0..buffer_req.size).unwrap();
+			writer[0] = data;
+			self.device.release_mapping_writer(writer).unwrap();
+		}
+	}
 
-	pub fn render_vertices(&mut self, vertex_buffer: B::Buffer) {
+	pub fn render_vertices(&mut self, vertex_buffer: B::Buffer, mvp: td::ModelViewProjection) {
 		if let Some(dims) = self.recreate_swapchain_dims.take() {
 			self.recreate_swapchain(dims.0, dims.1);
 		}
 
 		let frame_index: hal::SwapImageIndex = unsafe {
-			self.device.reset_fence(&self.fence).unwrap();
 			self.command_pool.reset();
 			match self
 				.swapchain
-				.acquire_image(!0, FrameSync::Semaphore(&mut self.semaphore))
+				.acquire_image(!0, FrameSync::Semaphore(&mut self.frame_semaphore))
 			{
 				Ok(i) => i,
 				Err(_) => {
 					let dims = self.get_dims();
 					self.recreate_swapchain(dims.0, dims.1);
-					self.render_vertices(vertex_buffer);
+					self.render_vertices(vertex_buffer, mvp);
 					return;
 				}
 			}
 		};
-		debug!("Got frame index");
+		trace!("Got frame index");
+		
+		let dims = self.get_dims();
+		let aspect = dims.0 as f32 / dims.1 as f32;
+		self.update_mvp(mvp);
 
 		let mut cmd_buffer = self.create_cmd_buffer();
-		debug!("Created cmd buf");
+		trace!("Created cmd buf");
 		unsafe {
 			cmd_buffer.begin();
 			cmd_buffer.set_viewports(0, &[self.viewport.clone()]);
 			cmd_buffer.set_scissors(0, &[self.viewport.rect]);
 			cmd_buffer.bind_graphics_pipeline(&self.pipeline);
 			cmd_buffer.bind_vertex_buffers(0, Some((&vertex_buffer, 0)));
+			cmd_buffer.bind_graphics_descriptor_sets(&self.pipeline_layout, 0, &self.descriptor_sets, &[0]);
 
 			{
 				let mut encoder = cmd_buffer.begin_render_pass_inline(
@@ -558,30 +815,28 @@ where
 
 			cmd_buffer.finish();
 		}
-		debug!("Finished cmd buf, creating submission");
+		trace!("Finished cmd buf, creating submission");
 
 		let submission = Submission {
 			command_buffers: Some(&cmd_buffer),
-			wait_semaphores: Some((&self.semaphore, PipelineStage::BOTTOM_OF_PIPE)),
-			signal_semaphores: &[],
+			wait_semaphores: Some((&self.frame_semaphore, PipelineStage::BOTTOM_OF_PIPE)),
+			signal_semaphores: vec![&self.present_semaphore],
 		};
 
 		unsafe {
-			debug!("Submitting");
-			self.queue_group.queues[0].submit(submission, Some(&mut self.fence));
-			debug!("Waiting");
-			self.device.wait_for_fence(&self.fence, !0).unwrap();
-			debug!("Freeing cmd buf");
+			trace!("Submitting");
+			self.queue_group.queues[0].submit(submission, None);
+			trace!("Freeing cmd buf");
 			self.command_pool.free(Some(cmd_buffer));
-			debug!("Presenting");
+			trace!("Presenting");
 			if let Err(_) = self
 				.swapchain
-				.present_nosemaphores(&mut self.queue_group.queues[0], frame_index)
+				.present(&mut self.queue_group.queues[0], frame_index, &[&self.present_semaphore])
 			{
 				let dims = self.get_dims();
 				self.recreate_swapchain(dims.0, dims.1);
 			};
-			debug!("Done");
+			trace!("Done");
 		}
 	}
 }

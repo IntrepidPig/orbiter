@@ -17,6 +17,7 @@ path = "spas/main.rs"
 
 [dependencies]
 nalgebra = "0.16"
+nalgebra-glm = "0.2"
 alga = "0.7"
 winit = "0.18"
 log = "0.4"
@@ -25,6 +26,8 @@ hal = { version = "0.1.0", package = "gfx-hal" }
 gfx-backend-vulkan = "0.1.0"
 fern = "0.5"
 chrono = "0.4"
+palette = "0.4"
+shaderc = "0.3"
 
 [profile.release]
 lto = true
