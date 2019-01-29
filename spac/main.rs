@@ -1,5 +1,6 @@
 use std::{collections::HashMap, io::Read, path::Path, fs::File};
 
+#[allow(unused_imports)]
 use hal::{
 	adapter::Adapter,
 	buffer,
@@ -26,7 +27,7 @@ use hal::{
 use gfx_backend_vulkan as backend;
 
 use log::{debug, error, info, trace, warn};
-use winit::{DeviceEvent, Event, EventsLoop, Window, WindowBuilder, WindowEvent, VirtualKeyCode, ElementState};
+use winit::{Event, EventsLoop, Window, WindowBuilder, WindowEvent, VirtualKeyCode, ElementState};
 
 use spa::prelude::*;
 
@@ -111,7 +112,7 @@ pub unsafe fn init() {
 				},
 				Event::DeviceEvent { event, .. } => match event {
 					winit::DeviceEvent::Key(input) => {
-						let winit::KeyboardInput { state, virtual_keycode, modifiers, scancode: _scancode } = input;
+						let winit::KeyboardInput { state, virtual_keycode, modifiers: _modifiers, scancode: _scancode } = input;
 						match (virtual_keycode, state) {
 							(Some(VirtualKeyCode::W), ElementState::Pressed) => {
 								controls.w = true;
@@ -216,6 +217,7 @@ where
 	I: hal::Instance<Backend = B>,
 {
 	window: Window,
+	#[allow(dead_code)]
 	instance: I,
 	surface: B::Surface,
 	adapter: Adapter<B>,
@@ -231,6 +233,7 @@ where
 	swapchain: B::Swapchain,
 	swapchain_images: Vec<B::Image>,
 	dims: (u32, u32),
+	#[allow(dead_code)]
 	descriptor_pool: B::DescriptorPool,
 	descriptor_sets: Vec<B::DescriptorSet>,
 	frame_views: Vec<B::ImageView>,
@@ -252,7 +255,7 @@ where
 		const HEIGHT: u32 = 768;
 		let mut adapter = Self::initialize(&instance);
 		let mut surface = surface;
-		let (device, mut queue_group) = Self::get_device_and_queue_group(&adapter, &surface);
+		let (device, queue_group) = Self::get_device_and_queue_group(&adapter, &surface);
 		let command_pool = Self::create_command_pool(&device, &queue_group);
 		let (_caps, formats, _present_modes, _composite_alphas) =
 			surface.compatibility(&mut adapter.physical_device);
@@ -266,7 +269,6 @@ where
 		});
 		debug!("Picked {:?}", format);
 		let render_pass = Self::build_render_pass(&device, format);
-		let compiler = shaderc::Compiler::new().unwrap();
 		let vert_spirv = Self::compile_shader_file(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/shader.vert"), shaderc::ShaderKind::Vertex);
 		let frag_spirv = Self::compile_shader_file(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/shader.frag"), shaderc::ShaderKind::Fragment);
 		let shaders = Self::load_spirv_shaders(
@@ -279,12 +281,12 @@ where
 			],
 		);
 		let (swapchain, backbuffer) =
-			Self::build_swapchain(&device, &mut adapter, &mut surface, format, WIDTH, HEIGHT);
+			Self::build_swapchain(&device, &mut adapter, &mut surface, format, None, WIDTH, HEIGHT);
 		let (mvp_buffer, mvp_memory) = Self::create_uniform_buffer::<td::ModelViewProjection>(&device, &adapter);
 		let (swapchain_images, frame_views, framebuffers) =
 			Self::get_frame_views_and_buffers(&device, &render_pass, backbuffer, WIDTH, HEIGHT);
 		let mut descriptor_pool = Self::create_descriptor_pool(&device, &swapchain_images);
-		let (pipeline, pipeline_layout, descriptor_sets) = Self::build_pipeline::<td::Vertex>(&device, &render_pass, &shaders, &mut descriptor_pool, &mvp_buffer);
+		let (pipeline, pipeline_layout, descriptor_sets) = Self::build_pipeline::<td::Vertex>(&device, &render_pass, shaders, &mut descriptor_pool, &mvp_buffer);
 		let (frame_semaphore, present_semaphore) = Self::create_semaphore_and_fence(&device);
 		let viewport = Self::create_viewport(WIDTH, HEIGHT);
 		let recreate_swapchain = false;
@@ -319,10 +321,6 @@ where
 			recreate_swapchain_dims,
 			dims,
 		}
-	}
-
-	pub fn create_window(width: u32, height: u32) -> (Window, EventsLoop) {
-		unimplemented!()
 	}
 
 	pub fn initialize(instance: &I) -> Adapter<B> {
@@ -423,7 +421,7 @@ where
 	pub fn build_pipeline<V>(
 		device: &B::Device,
 		render_pass: &B::RenderPass,
-		shader_modules: &HashMap<String, B::ShaderModule>,
+		shader_modules: HashMap<String, B::ShaderModule>,
 		descriptor_pool: &mut B::DescriptorPool,
 		mvp_buffer: &B::Buffer,
 	) -> (B::GraphicsPipeline, B::PipelineLayout, Vec<B::DescriptorSet>) {
@@ -438,7 +436,7 @@ where
 		let desc_set_layout = unsafe { device.create_descriptor_set_layout(&[desc_set_layout_binding], &[]).unwrap() };
 		
 		let mut desc_sets = Vec::new();
-		unsafe { descriptor_pool.allocate_sets(&[desc_set_layout], &mut desc_sets) };
+		unsafe { descriptor_pool.allocate_sets(&[desc_set_layout], &mut desc_sets).unwrap() };
 		
 		unsafe {
 			device.write_descriptor_sets(vec![pso::DescriptorSetWrite {
@@ -448,14 +446,6 @@ where
 				descriptors: &[pso::Descriptor::Buffer(mvp_buffer, None..None)]
 			}]);
 		}
-		
-		let desc_set_layout_binding = pso::DescriptorSetLayoutBinding {
-			binding: 0,
-			ty: pso::DescriptorType::UniformBuffer,
-			count: 1,
-			stage_flags: pso::ShaderStageFlags::VERTEX,
-			immutable_samplers: false
-		};
 		
 		let desc_set_layout_binding = pso::DescriptorSetLayoutBinding {
 			binding: 0,
@@ -534,6 +524,12 @@ where
 				.unwrap()
 		};
 		
+		drop(pipeline_desc);
+		
+		for (_, shader_module) in shader_modules {
+			unsafe { device.destroy_shader_module(shader_module) };
+		}
+		
 		(pipeline, pipeline_layout, desc_sets)
 	}
 
@@ -542,6 +538,7 @@ where
 		adapter: &mut Adapter<B>,
 		surface: &mut B::Surface,
 		format: Format,
+		old_swapchain: Option<B::Swapchain>,
 		width: u32,
 		height: u32,
 	) -> (B::Swapchain, Backbuffer<B>) {
@@ -550,17 +547,36 @@ where
 			surface.compatibility(&mut adapter.physical_device);
 		let swap_config = SwapchainConfig::from_caps(&caps, format, extent);
 
-		unsafe { device.create_swapchain(surface, swap_config, None).unwrap() }
+		unsafe { device.create_swapchain(surface, swap_config, old_swapchain).unwrap() }
 	}
 
-	pub fn recreate_swapchain(&mut self, width: u32, height: u32) {
-		debug!("Recreated swapchain");
-		self.device.wait_idle().unwrap();
+	pub fn recreate_swapchain(&mut self) {
+		debug!("Recreating swapchain");
+		self.device.wait_idle().map_err(|e| warn!("Couldn't wait for idle: {:?}", e));
+		self.update_dims();
+		let dims = self.get_dims();
+		let width = dims.0;
+		let height = dims.1;
+		
+		// Clean up resources
+		while let Some(image) = self.swapchain_images.pop() {
+			//unsafe { self.device.destroy_image(image) }
+		}
+		while let Some(frame_view) = self.frame_views.pop() {
+			unsafe { self.device.destroy_image_view(frame_view) };
+		}
+		while let Some(framebuffer) = self.framebuffers.pop() {
+			unsafe { self.device.destroy_framebuffer(framebuffer) };
+		}
+		
+		let old_swapchain = std::mem::replace(&mut self.swapchain, unsafe { std::mem::uninitialized() });
+		//unsafe { self.device.destroy_swapchain(old_swapchain) };
 		let (swapchain, backbuffer) = Self::build_swapchain(
 			&self.device,
 			&mut self.adapter,
 			&mut self.surface,
 			self.format,
+			Some(old_swapchain),
 			width,
 			height,
 		);
@@ -571,14 +587,15 @@ where
 			width,
 			height,
 		);
-		self.swapchain = swapchain;
+		
+		// Put in new resources
+		unsafe { std::ptr::write(&mut self.swapchain, swapchain); }
 		self.swapchain_images = swapchain_images;
 		self.frame_views = frame_views;
 		self.framebuffers = framebuffers;
 		self.viewport.rect.w = width as _;
 		self.viewport.rect.h = height as _;
 		self.recreate_swapchain = false;
-		self.update_dims();
 	}
 
 	pub fn get_frame_views_and_buffers(
@@ -768,10 +785,11 @@ where
 	}
 
 	pub fn render_vertices(&mut self, vertex_buffer: B::Buffer, mvp: td::ModelViewProjection) {
-		if let Some(dims) = self.recreate_swapchain_dims.take() {
-			self.recreate_swapchain(dims.0, dims.1);
+		if self.recreate_swapchain {
+			info!("Recreating swapchain");
+			self.recreate_swapchain();
 		}
-
+		
 		let frame_index: hal::SwapImageIndex = unsafe {
 			self.command_pool.reset();
 			match self
@@ -779,18 +797,15 @@ where
 				.acquire_image(!0, FrameSync::Semaphore(&mut self.frame_semaphore))
 			{
 				Ok(i) => i,
-				Err(_) => {
-					let dims = self.get_dims();
-					self.recreate_swapchain(dims.0, dims.1);
-					self.render_vertices(vertex_buffer, mvp);
+				Err(e) => {
+					warn!("Could not obtain swapchain image index: {:?}", e);
+					self.recreate_swapchain = true;
 					return;
 				}
 			}
 		};
 		trace!("Got frame index");
 		
-		let dims = self.get_dims();
-		let aspect = dims.0 as f32 / dims.1 as f32;
 		self.update_mvp(mvp);
 
 		let mut cmd_buffer = self.create_cmd_buffer();
@@ -829,12 +844,12 @@ where
 			trace!("Freeing cmd buf");
 			self.command_pool.free(Some(cmd_buffer));
 			trace!("Presenting");
-			if let Err(_) = self
+			if let Err(e) = self
 				.swapchain
 				.present(&mut self.queue_group.queues[0], frame_index, &[&self.present_semaphore])
 			{
-				let dims = self.get_dims();
-				self.recreate_swapchain(dims.0, dims.1);
+				warn!("Could not present: {:?}", e);
+				self.recreate_swapchain = true;
 			};
 			trace!("Done");
 		}
