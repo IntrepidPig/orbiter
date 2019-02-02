@@ -239,6 +239,7 @@ where
 	frame_views: Vec<B::ImageView>,
 	framebuffers: Vec<B::Framebuffer>,
 	frame_semaphore: B::Semaphore,
+	frame_fence: B::Fence,
 	present_semaphore: B::Semaphore,
 	viewport: Viewport,
 	recreate_swapchain: bool,
@@ -288,6 +289,7 @@ where
 		let mut descriptor_pool = Self::create_descriptor_pool(&device, &swapchain_images);
 		let (pipeline, pipeline_layout, descriptor_sets) = Self::build_pipeline::<td::Vertex>(&device, &render_pass, shaders, &mut descriptor_pool, &mvp_buffer);
 		let (frame_semaphore, present_semaphore) = Self::create_semaphore_and_fence(&device);
+		let frame_fence = Self::create_fence(&device);
 		let viewport = Self::create_viewport(WIDTH, HEIGHT);
 		let recreate_swapchain = false;
 		let recreate_swapchain_dims = None;
@@ -315,6 +317,7 @@ where
 			frame_views,
 			framebuffers,
 			frame_semaphore,
+			frame_fence,
 			present_semaphore,
 			viewport,
 			recreate_swapchain,
@@ -552,7 +555,7 @@ where
 
 	pub fn recreate_swapchain(&mut self) {
 		debug!("Recreating swapchain");
-		self.device.wait_idle().map_err(|e| warn!("Couldn't wait for idle: {:?}", e));
+		self.device.wait_idle().unwrap();
 		self.update_dims();
 		let dims = self.get_dims();
 		let width = dims.0;
@@ -654,6 +657,10 @@ where
 			device.create_semaphore().unwrap(),
 			device.create_semaphore().unwrap(),
 		)
+	}
+	
+	pub fn create_fence(device: &B::Device) -> B::Fence {
+		device.create_fence(false).unwrap()
 	}
 
 	pub fn create_vertex_buffer<V: Copy>(&self, data: &[V]) -> (B::Buffer, B::Memory) {
@@ -791,6 +798,7 @@ where
 		}
 		
 		let frame_index: hal::SwapImageIndex = unsafe {
+			self.device.reset_fence(&self.frame_fence).unwrap();
 			self.command_pool.reset();
 			match self
 				.swapchain
@@ -823,7 +831,7 @@ where
 					&self.render_pass,
 					&self.framebuffers[frame_index as usize],
 					self.viewport.rect,
-					&[ClearValue::Color(ClearColor::Float([1.0, 1.0, 1.0, 1.0]))],
+					&[ClearValue::Color(ClearColor::Float([0.4314, 0.5804, 0.8196, 1.0]))],
 				);
 				encoder.draw(0..6, 0..1);
 			}
@@ -840,8 +848,9 @@ where
 
 		unsafe {
 			trace!("Submitting");
-			self.queue_group.queues[0].submit(submission, None);
+			self.queue_group.queues[0].submit(submission, Some(&self.frame_fence));
 			trace!("Freeing cmd buf");
+			self.device.wait_for_fence(&self.frame_fence, std::u64::MAX).unwrap();
 			self.command_pool.free(Some(cmd_buffer));
 			trace!("Presenting");
 			if let Err(e) = self
